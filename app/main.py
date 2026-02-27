@@ -1,18 +1,20 @@
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 
 from .database import SessionLocal, engine, Base
-from .models import User
+from . import models
 from .schemas import UserCreate, Token
 from .auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 
-app = FastAPI()
+app = FastAPI(title="FastAPI Auth API")
 
+# IMPORTANT: import models before create_all
 Base.metadata.create_all(bind=engine)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
 
 def get_db():
     db = SessionLocal()
@@ -22,13 +24,24 @@ def get_db():
         db.close()
 
 
+# ✅ Root endpoint (fix for Render /)
+@app.get("/")
+def root():
+    return {"message": "FastAPI Auth API is running", "docs": "/docs", "health": "/health"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 @app.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user.email).first()
-    if existing_user:
+    existing = db.query(models.User).filter(models.User.email == user.email).first()
+    if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    new_user = User(
+    new_user = models.User(
         email=user.email,
         hashed_password=hash_password(user.password)
     )
@@ -41,21 +54,23 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
 @app.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
-
+    user = db.query(models.User).filter(models.User.email == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials"
+        )
 
-    access_token = create_access_token({"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+    token = create_access_token(subject=user.email)
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @app.get("/protected")
-def protected_route(token: str = Depends(oauth2_scheme)):
+def protected(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
+        email = payload.get("sub")
+        if not email:
             raise HTTPException(status_code=401, detail="Invalid token")
         return {"message": f"Hello {email}"}
     except JWTError:
